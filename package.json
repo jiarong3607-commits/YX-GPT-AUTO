@@ -1,0 +1,22 @@
+{
+  "name": "gpt-fleet-image-coursework",
+  "version": "1.0.0",
+  "description": "课程作业：选择车队进入 GPT 图片生成聊天页的网页原型",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  },
+  "keywords": [
+    "coursework",
+    "gpt",
+    "image-generation",
+    "node",
+    "frontend"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

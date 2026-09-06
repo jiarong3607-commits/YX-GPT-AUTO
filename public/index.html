@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GPT 车队图片生成池</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="login-page" id="loginPage">
+        <div class="login-card">
+          <div class="brand login-brand">
+            <span class="brand-mark">G</span>
+            <span>GPT 车队池</span>
+          </div>
+          <p class="eyebrow">Internal Access</p>
+          <h1>内部访问验证</h1>
+          <p class="subtitle">请输入内部访问码后使用图片生成功能。访问码只提交给后端，不会保存在前端代码里。</p>
+          <form class="login-form" id="loginForm">
+            <label>
+              内部访问码
+              <input id="accessCodeInput" type="password" autocomplete="current-password" placeholder="请输入内部访问码" />
+            </label>
+            <button type="submit" id="loginButton">进入车队池</button>
+          </form>
+          <p class="login-error" id="loginError" role="alert"></p>
+        </div>
+      </section>
+
+      <section class="hero hidden" id="fleetPage">
+        <nav class="topbar">
+          <div class="brand">
+            <span class="brand-mark">G</span>
+            <span>GPT 车队池</span>
+          </div>
+          <div class="topbar-actions">
+            <span class="badge">课程作业 Demo</span>
+            <button class="ghost-button compact" id="logoutButton">退出</button>
+          </div>
+        </nav>
+
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">Shared Fleet Workspace</p>
+            <h1>选择一个车队，进入 GPT 图片生成工作台</h1>
+            <p class="subtitle">
+              支持单张聊天式生成，也支持本地第一版批量素材生成。API Key 只在后端读取，页面只展示非敏感运行状态。
+            </p>
+            <div class="stats">
+              <div><strong>3</strong><span>个演示车队</span></div>
+              <div><strong>1</strong><span>个安全后端代理</span></div>
+              <div><strong>0</strong><span>前端密钥暴露</span></div>
+            </div>
+          </div>
+
+          <div class="fleet-panel">
+            <div class="panel-header">
+              <span>请选择车队</span>
+              <small>在线 · 可进入</small>
+            </div>
+            <div class="fleet-list" id="fleetList"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="chat-page hidden" id="chatPage">
+        <aside class="sidebar">
+          <button class="ghost-button" id="backButton">← 返回车队池</button>
+          <div class="selected-fleet-card">
+            <span class="fleet-icon" id="selectedFleetIcon">🚗</span>
+            <h2 id="selectedFleetName">极光车队</h2>
+            <p id="selectedFleetDesc">适合创意图片生成</p>
+          </div>
+          <div class="runtime-card">
+            <h3>运行状态</h3>
+            <dl class="runtime-list">
+              <div>
+                <dt>当前车队</dt>
+                <dd id="runtimeFleet">未选择</dd>
+              </div>
+              <div>
+                <dt>生成状态</dt>
+                <dd id="runtimeStatus">等待选择车队</dd>
+              </div>
+              <div>
+                <dt>最近动作</dt>
+                <dd id="runtimeLastAction">尚未生成</dd>
+              </div>
+              <div>
+                <dt>错误提示</dt>
+                <dd id="runtimeError">无</dd>
+              </div>
+              <div>
+                <dt>输出路径</dt>
+                <dd id="runtimeOutput">未生成</dd>
+              </div>
+            </dl>
+          </div>
+          <div class="tips-card">
+            <h3>提示词建议</h3>
+            <ul>
+              <li>描述主体、场景、风格和光线</li>
+              <li>批量生成可写“每张生成 2 张”</li>
+              <li>避免输入隐私和账号密码</li>
+            </ul>
+          </div>
+        </aside>
+
+        <section class="chat-main">
+          <header class="chat-header">
+            <div>
+              <p class="eyebrow">Image Workspace</p>
+              <h1>GPT 图片生成工作台</h1>
+            </div>
+            <span class="status-dot idle" id="runtimeBadge">等待选择车队</span>
+          </header>
+
+          <div class="mode-tabs" role="tablist" aria-label="图片生成模式">
+            <button type="button" class="mode-tab active" id="singleModeTab">单张聊天生成</button>
+            <button type="button" class="mode-tab" id="batchModeTab">批量素材生成</button>
+          </div>
+
+          <section class="single-panel" id="singlePanel">
+            <div class="messages" id="messages">
+              <article class="message bot">
+                <div class="avatar">AI</div>
+                <div class="bubble">
+                  你好！选择图片尺寸和风格后，输入你想生成的画面，我会帮你生成图片。
+                </div>
+              </article>
+            </div>
+
+            <form class="composer" id="promptForm">
+              <div class="controls">
+                <label>
+                  尺寸
+                  <select id="sizeSelect">
+                    <option value="1024x1024">方图 1024×1024</option>
+                    <option value="1536x1024">横图 1536×1024</option>
+                    <option value="1024x1536">竖图 1024×1536</option>
+                  </select>
+                </label>
+                <label>
+                  质量
+                  <select id="qualitySelect">
+                    <option value="auto">自动</option>
+                    <option value="low">低</option>
+                    <option value="medium">中</option>
+                    <option value="high">高</option>
+                  </select>
+                </label>
+                <label>
+                  风格
+                  <select id="styleSelect">
+                    <option value="natural">自然写实</option>
+                    <option value="vivid">鲜艳夸张</option>
+                    <option value="anime">动漫插画</option>
+                    <option value="poster">电影海报</option>
+                  </select>
+                </label>
+              </div>
+              <div class="input-row">
+                <textarea id="promptInput" rows="2" placeholder="例如：一辆赛博朋克风格的蓝色超级跑车，夜晚城市街道，电影光效"></textarea>
+                <button type="submit" id="generateButton">生成图片</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="batch-panel hidden" id="batchPanel">
+            <form class="batch-form" id="batchForm">
+              <div class="batch-grid">
+                <label class="file-picker">
+                  <strong>1. 选择素材图文件夹</strong>
+                  <span>按顺序处理，最多 10 张；支持 PNG / JPG / WEBP。</span>
+                  <input id="materialsInput" type="file" accept="image/png,image/jpeg,image/webp" webkitdirectory multiple />
+                </label>
+                <label class="file-picker">
+                  <strong>2. 选择底板图文件夹</strong>
+                  <span>第一版只使用 1 张底板图；如果有多张，请在下方选择本次使用的一张。</span>
+                  <input id="baseFolderInput" type="file" accept="image/png,image/jpeg,image/webp" webkitdirectory multiple />
+                </label>
+                <label class="file-picker">
+                  <strong>3. 选择提示词 txt</strong>
+                  <span>读取 txt 内容；若无法解析生成数量，默认每张素材生成 1 张。</span>
+                  <input id="promptFileInput" type="file" accept=".txt,text/plain" />
+                </label>
+              </div>
+
+              <div class="controls batch-controls">
+                <label>
+                  本次底板图
+                  <select id="baseImageSelect">
+                    <option value="">请先选择底板图文件夹</option>
+                  </select>
+                </label>
+                <label>
+                  结果目录标识
+                  <input id="outputLabelInput" type="text" maxlength="48" placeholder="可选，例如 course-demo" />
+                </label>
+                <label>
+                  批量质量
+                  <select id="batchQualitySelect">
+                    <option value="auto">自动</option>
+                    <option value="low">低</option>
+                    <option value="medium">中</option>
+                    <option value="high">高</option>
+                  </select>
+                </label>
+                <label>
+                  批量风格
+                  <select id="batchStyleSelect">
+                    <option value="natural">自然写实</option>
+                    <option value="vivid">鲜艳夸张</option>
+                    <option value="anime">动漫插画</option>
+                    <option value="poster">电影海报</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="batch-note" id="batchNote">
+                浏览器不能稳定授权网页任意写入本地文件夹，第一版使用后端 <code>outputs/日期时间/</code> 目录保存结果。
+              </div>
+
+              <div class="batch-actions">
+                <button type="button" class="ghost-button" id="previewBatchButton">读取并预估</button>
+                <button type="submit" id="startBatchButton">开始批量生成</button>
+              </div>
+            </form>
+
+            <div class="batch-status-card">
+              <div class="panel-header">
+                <span>批量进度</span>
+                <small id="batchPlanSummary">等待读取文件</small>
+              </div>
+              <progress id="batchProgress" value="0" max="1"></progress>
+              <dl class="runtime-list batch-runtime-list">
+                <div>
+                  <dt>总任务</dt>
+                  <dd id="batchTotal">0</dd>
+                </div>
+                <div>
+                  <dt>当前</dt>
+                  <dd id="batchCurrent">未开始</dd>
+                </div>
+                <div>
+                  <dt>成功</dt>
+                  <dd id="batchSuccess">0</dd>
+                </div>
+                <div>
+                  <dt>失败</dt>
+                  <dd id="batchFailed">0</dd>
+                </div>
+                <div>
+                  <dt>输出目录</dt>
+                  <dd id="batchOutputDir">未生成</dd>
+                </div>
+              </dl>
+              <div class="batch-log" id="batchLog" aria-live="polite"></div>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
