@@ -4,17 +4,19 @@ import { existsSync, readFileSync } from 'node:fs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createOpenAIProviderRouter } from './openai-provider-router.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const env = readEnvFile();
 const port = Number(process.env.PORT || env.PORT || 3000);
-const apiKey = process.env.OPENAI_API_KEY || env.OPENAI_API_KEY || '';
+const getEnv = name => process.env[name] || env[name] || '';
 const internalAccessCode = process.env.INTERNAL_ACCESS_CODE || env.INTERNAL_ACCESS_CODE || '';
 const demoImageMode = String(process.env.DEMO_IMAGE_MODE || env.DEMO_IMAGE_MODE || '').toLowerCase() === 'true';
 const dataDir = path.resolve(__dirname, process.env.DATA_DIR || env.DATA_DIR || 'data');
 const outputsDir = path.resolve(__dirname, process.env.OUTPUTS_DIR || env.OUTPUTS_DIR || 'outputs');
 const runtimeEventsFile = path.join(dataDir, 'runtime-events.jsonl');
+const openAiProviderRouter = createOpenAIProviderRouter({ getEnv });
 const sessions = new Map();
 const sessionMaxAgeMs = 8 * 60 * 60 * 1000;
 
@@ -101,6 +103,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, () => {
   console.log(`GPT 车队图片生成网页已启动：http://localhost:${port}`);
+  const providerSummary = openAiProviderRouter.getSummary();
+  console.info('[provider-router]', JSON.stringify({
+    mode: providerSummary.mode,
+    providerIds: providerSummary.providerIds,
+  }));
   if (demoImageMode) {
     console.log('当前为演示模式：后端会返回本地占位图片，不会调用外部接口。');
   }
@@ -192,14 +199,6 @@ async function handleImageGeneration(req, res) {
     return;
   }
 
-  if (!apiKey || apiKey.includes('sk-your-api-key-here')) {
-    await recordRuntimeEvent({ ...runtimeMeta, result: 'error', errorType: 'missing_api_key', mode: 'openai' });
-    sendJson(res, 500, {
-      error: '请先在服务端配置 OPENAI_API_KEY，或设置 DEMO_IMAGE_MODE=true 只演示流程。',
-    });
-    return;
-  }
-
   const enhancedPrompt = [
     `主题：${prompt}`,
     `车队频道：${fleet.channel}`,
@@ -208,10 +207,9 @@ async function handleImageGeneration(req, res) {
   ].join('\n');
 
   try {
-    const openAiResponse = await fetch('https://api.openai.com/v1/images/generations', {
+    const providerResult = await openAiProviderRouter.request('/images/generations', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -223,33 +221,48 @@ async function handleImageGeneration(req, res) {
       }),
     });
 
-    const data = await openAiResponse.json().catch(() => ({}));
-
-    if (!openAiResponse.ok) {
-      await recordRuntimeEvent({ ...runtimeMeta, result: 'error', errorType: 'provider_error', mode: 'openai' });
-      sendJson(res, openAiResponse.status, {
-        error: data?.error?.message || '图片生成失败，请检查提示词、额度或 API Key。',
-      });
-      return;
-    }
+    const data = await providerResult.response.json().catch(() => ({}));
 
     const imageBase64 = data?.data?.[0]?.b64_json;
     if (!imageBase64) {
-      await recordRuntimeEvent({ ...runtimeMeta, result: 'error', errorType: 'empty_image', mode: 'openai' });
-      sendJson(res, 502, { error: '接口没有返回图片数据。' });
+      await recordRuntimeEvent({
+        ...runtimeMeta,
+        result: 'error',
+        errorType: 'empty_image',
+        mode: 'openai',
+        providerId: providerResult.providerId,
+        providerStatus: providerResult.providerStatus,
+        providerFailoverCount: providerResult.attempts.length,
+      });
+      sendJson(res, 502, { error: '图片生成服务没有返回可用结果，请稍后再试。' });
       return;
     }
 
-    await recordRuntimeEvent({ ...runtimeMeta, result: 'success', errorType: '', mode: 'openai' });
+    await recordRuntimeEvent({
+      ...runtimeMeta,
+      result: 'success',
+      errorType: '',
+      mode: 'openai',
+      providerId: providerResult.providerId,
+      providerStatus: providerResult.providerStatus,
+      providerFailoverCount: providerResult.attempts.length,
+    });
     sendJson(res, 200, {
       imageUrl: `data:image/png;base64,${imageBase64}`,
       fleet: fleet.name,
       runtime: { ...runtimeMeta, result: 'success', mode: 'openai' },
     });
   } catch (error) {
-    console.error('图片生成接口调用失败：', error.message);
-    await recordRuntimeEvent({ ...runtimeMeta, result: 'error', errorType: 'network_error', mode: 'openai' });
-    sendJson(res, 502, { error: '图片生成接口暂时不可用，请稍后再试。' });
+    await recordRuntimeEvent({
+      ...runtimeMeta,
+      result: 'error',
+      errorType: normalizeErrorType(error),
+      mode: 'openai',
+      providerId: error.providerId || '',
+      providerStatus: error.providerStatus || 0,
+      providerFailoverCount: error.providerAttempts?.length || 0,
+    });
+    sendJson(res, error.statusCode || 502, { error: publicImageErrorMessage(error) });
   }
 }
 
@@ -317,7 +330,7 @@ async function handleBatchGeneration(req, res) {
       };
 
       try {
-        const imageDataUrl = await generateBatchImage({
+        const generation = await generateBatchImage({
           prompt: batch.prompt,
           material,
           baseImage: batch.baseImage,
@@ -327,7 +340,7 @@ async function handleBatchGeneration(req, res) {
           sequence,
         });
         const output = await saveGeneratedImage({
-          imageDataUrl,
+          imageDataUrl: generation.imageDataUrl,
           materialName: material.safeName,
           baseName: batch.baseImage.safeName,
           sequence,
@@ -350,6 +363,9 @@ async function handleBatchGeneration(req, res) {
           result: 'success',
           errorType: '',
           mode: demoImageMode ? 'demo' : 'openai',
+          providerId: generation.providerId,
+          providerStatus: generation.providerStatus,
+          providerFailoverCount: generation.providerAttempts.length,
         });
         writeNdjson(res, { ...progressBase, status: 'success', outputPath: output.relativePath });
       } catch (error) {
@@ -367,6 +383,9 @@ async function handleBatchGeneration(req, res) {
           result: 'error',
           errorType,
           mode: demoImageMode ? 'demo' : 'openai',
+          providerId: error.providerId || '',
+          providerStatus: error.providerStatus || 0,
+          providerFailoverCount: error.providerAttempts?.length || 0,
         });
         writeNdjson(res, {
           ...progressBase,
@@ -503,13 +522,12 @@ async function createBatchOutputTarget(outputLabel) {
 
 async function generateBatchImage({ prompt, material, baseImage, size, quality, style, sequence }) {
   if (demoImageMode) {
-    return buildBatchDemoImageDataUrl(material.safeName, baseImage.safeName, styleLabels[style], sequence, prompt.length);
-  }
-
-  if (!apiKey || apiKey.includes('sk-your-api-key-here')) {
-    const error = new Error('missing_api_key');
-    error.code = 'missing_api_key';
-    throw error;
+    return {
+      imageDataUrl: buildBatchDemoImageDataUrl(material.safeName, baseImage.safeName, styleLabels[style], sequence, prompt.length),
+      providerId: '',
+      providerStatus: 0,
+      providerAttempts: [],
+    };
   }
 
   const enhancedPrompt = [
@@ -529,27 +547,30 @@ async function generateBatchImage({ prompt, material, baseImage, size, quality, 
   formData.append('image[]', new Blob([baseImage.buffer], { type: baseImage.mime }), `${baseImage.safeName}${extensionForMime(baseImage.mime)}`);
   formData.append('image[]', new Blob([material.buffer], { type: material.mime }), `${material.safeName}${extensionForMime(material.mime)}`);
 
-  const openAiResponse = await fetch('https://api.openai.com/v1/images/edits', {
+  const providerResult = await openAiProviderRouter.request('/images/edits', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
+    headers: {},
     body: formData,
   });
 
-  const data = await openAiResponse.json().catch(() => ({}));
-  if (!openAiResponse.ok) {
-    const error = new Error(data?.error?.type || 'provider_error');
-    error.code = 'provider_error';
-    throw error;
-  }
+  const data = await providerResult.response.json().catch(() => ({}));
 
   const imageBase64 = data?.data?.[0]?.b64_json;
   if (!imageBase64) {
     const error = new Error('empty_image');
     error.code = 'empty_image';
+    error.providerId = providerResult.providerId;
+    error.providerStatus = providerResult.providerStatus;
+    error.providerAttempts = providerResult.attempts;
     throw error;
   }
 
-  return `data:image/png;base64,${imageBase64}`;
+  return {
+    imageDataUrl: `data:image/png;base64,${imageBase64}`,
+    providerId: providerResult.providerId,
+    providerStatus: providerResult.providerStatus,
+    providerAttempts: providerResult.attempts,
+  };
 }
 
 async function saveGeneratedImage({ imageDataUrl, materialName, baseName, sequence, outputDir, relativeDir, usedFileNames }) {
@@ -606,11 +627,29 @@ function normalizeErrorType(error) {
 function publicBatchErrorMessage(errorType) {
   const messages = {
     missing_api_key: '服务端未配置 OPENAI_API_KEY，可开启 DEMO_IMAGE_MODE=true 演示流程。',
+    provider_network_error: '图片生成服务连接中断。为避免重复生成，本次未自动切换服务端配置，请稍后再试。',
+    provider_request_limit: '当前图片生成服务已达到本次运行的请求上限，请稍后再试。',
+    provider_unavailable: '当前没有可用的图片生成服务，请稍后再试。',
+    provider_retryable_error: '图片生成服务暂时不可用，本次已跳过并继续下一张。',
     provider_error: '图片生成服务返回错误，本次已跳过并继续下一张。',
     empty_image: '图片生成服务没有返回图片，本次已跳过并继续下一张。',
     invalid_image_data: '生成图片数据格式不正确，本次已跳过并继续下一张。',
   };
   return messages[errorType] || '本次生成失败，已记录错误并继续下一张。';
+}
+
+function publicImageErrorMessage(error) {
+  const errorType = normalizeErrorType(error);
+  const messages = {
+    missing_api_key: '请先在服务端配置 OPENAI_API_KEY，或设置 DEMO_IMAGE_MODE=true 只演示流程。',
+    provider_network_error: '图片生成服务连接中断。为避免重复生成，本次未自动切换服务端配置，请稍后再试。',
+    provider_request_limit: '当前图片生成服务已达到本次运行的请求上限，请稍后再试。',
+    provider_unavailable: '当前没有可用的图片生成服务，请稍后再试。',
+    provider_retryable_error: '图片生成服务暂时不可用，请稍后再试。',
+    provider_error: '图片生成服务返回错误，请检查服务端配置与请求参数后再试。',
+    empty_image: '图片生成服务没有返回可用结果，请稍后再试。',
+  };
+  return messages[errorType] || '图片生成服务暂时不可用，请稍后再试。';
 }
 
 async function serveStatic(pathname, res) {
@@ -681,6 +720,9 @@ async function recordRuntimeEvent(event) {
     result: event.result || 'error',
     errorType: event.errorType || '',
     mode: event.mode || '',
+    providerId: event.providerId || '',
+    providerStatus: Number(event.providerStatus || 0),
+    providerFailoverCount: Number(event.providerFailoverCount || 0),
   };
 
   try {
