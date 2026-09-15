@@ -10,8 +10,8 @@
 - 车队选择首页：展示多个车队、状态、余量和特色
 - 单张聊天式图片生成：输入提示词、选择尺寸/质量/风格
 - 批量素材生成：选择素材图文件夹、底板图文件夹、提示词 txt，按顺序生成并保存结果
-- 后端代理调用 OpenAI Images API，避免在浏览器暴露 API Key
-- 最小运行状态记录：保存请求时间、车队、图片参数、素材名、底板名、输出路径、提示词长度、成功/失败和错误类型
+- 后端通过服务端 OpenAI provider router 调用 Images API，避免在浏览器暴露 API Key
+- 最小运行状态记录：保存请求时间、车队、图片参数、素材名、底板名、输出路径、提示词长度、成功/失败、错误类型和非敏感 provider ID
 - 仅记录非敏感状态，不保存完整提示词、图片内容、账号密码、Cookie、Token、API Key 或 Secret
 - 无外部数据库依赖，默认用 `data/runtime-events.jsonl` 做本地 JSONL 记录，适合结课演示和二次扩展
 
@@ -30,7 +30,7 @@ cp .env.example .env
 INTERNAL_ACCESS_CODE=替换为内部访问码
 ```
 
-4. 如需真实生成图片，继续填入自己的 `OPENAI_API_KEY`
+4. 如需真实生成图片，继续填入自己的 `OPENAI_API_KEY`；多项目配置见下一节
 5. 启动服务：
 
 ```bash
@@ -52,6 +52,31 @@ DEMO_IMAGE_MODE=true
 ```
 
 开启后，后端会返回本地占位图片，不会调用外部接口，也不需要真实 API Key。正式演示真实生成能力时，请关闭演示模式并配置 `OPENAI_API_KEY`。
+
+## OpenAI 多项目服务端路由
+
+默认保持单键兼容：未设置 `OPENAI_PROVIDER_ORDER` 时，服务只读取 `OPENAI_API_KEY`，行为与原版本一致。
+
+如需使用多个已获授权的 OpenAI API 项目，在**仅存在于服务端**的 `.env` 或部署平台 Secret 中配置：
+
+```env
+OPENAI_PROVIDER_ORDER=primary,secondary
+OPENAI_PROVIDER_PRIMARY_API_KEY=服务端密钥
+OPENAI_PROVIDER_PRIMARY_ENABLED=true
+OPENAI_PROVIDER_PRIMARY_MAX_REQUESTS=100
+OPENAI_PROVIDER_PRIMARY_COOLDOWN_MS=60000
+OPENAI_PROVIDER_SECONDARY_API_KEY=服务端密钥
+OPENAI_PROVIDER_SECONDARY_ENABLED=true
+OPENAI_PROVIDER_SECONDARY_MAX_REQUESTS=100
+OPENAI_PROVIDER_SECONDARY_COOLDOWN_MS=60000
+```
+
+- `OPENAI_PROVIDER_ORDER` 决定优先顺序；provider ID 只能使用小写字母、数字和下划线。
+- 设置该变量后进入多项目模式，**仅**使用其中列出的、已启用且已配置密钥的 provider，不会回退到 `OPENAI_API_KEY`；名称不合法或未配置可用 provider 时会安全失败。
+- 只有明确的上游 HTTP `429` 或 `5xx` 会使当前 provider 在冷却期内熔断，并依次尝试下一个可用 provider。
+- 网络超时、连接中断或其他未取得 HTTP 响应的结果不透明失败绝不自动切换，避免一次请求被重复出图收费。
+- `MAX_REQUESTS` 是单次 Node 进程内的请求上限，`0` 表示不限；计数器和熔断状态重启后清零。它不是跨实例的限流、配额或成本控制替代方案。
+- provider 状态和运行记录只包含 provider ID、HTTP 状态和故障切换次数；不会记录、返回或打印 API Key。
 
 ## 批量素材图片自动生成
 
@@ -92,7 +117,7 @@ outputs/日期时间-标识-批次ID/
 
 ## Secret 和访问控制方案
 
-- 真实 `OPENAI_API_KEY` 和 `INTERNAL_ACCESS_CODE` 只能放在本地 `.env`、部署平台环境变量或公司批准的 Secret 管理位置
+- 真实 `OPENAI_API_KEY`、`OPENAI_PROVIDER_<ID>_API_KEY` 和 `INTERNAL_ACCESS_CODE` 只能放在本地 `.env`、部署平台环境变量或公司批准的 Secret 管理位置
 - `.env` 已被 `.gitignore` 忽略，不应提交到仓库
 - 前端不会读取或展示 API Key、访问码、Cookie 或 Session Token
 - 后端只使用 HttpOnly Cookie 保存临时会话标识，内存中保存会话状态，重启服务后会话失效
@@ -117,12 +142,14 @@ data/runtime-events.jsonl
 - 成功/失败
 - 错误类型
 - 模式：demo 或 openai
+- provider ID、上游 HTTP 状态和故障切换次数（均不含密钥）
 
 ## 项目结构
 
 ```text
 .
 ├── server.mjs          # Node 后端，提供静态文件、内部访问验证、单张和批量图片生成 API
+├── openai-provider-router.mjs # OpenAI 多项目服务端路由与内存保护状态
 ├── public/
 │   ├── index.html      # 页面结构
 │   ├── styles.css      # 页面样式
